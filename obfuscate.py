@@ -53,20 +53,20 @@ class renamefunc(ast.NodeTransformer):
     def __init__(self, name_map):
         self.name_map = name_map
 
-    def _visitfuncdef(self, node):
+    def visit_FunctionDef(self, node):
         self.generic_visit(node)
         if node.name in self.name_map:
             node.name = self.name_map[node.name]
         return node
 
-    _visitAsyncFunctionDef = _visitfuncdef
+    visit_AsyncFunctionDef = visit_FunctionDef
 
-    def _visitname(self, node):
+    def visit_Name(self, node):
         if node.id in self.name_map:
             node.id = self.name_map[node.id]
         return node
 
-    def _visitattribute(self, node):
+    def visit_Attribute(self, node):
         self.generic_visit(node)
         if node.attr in self.name_map:
             node.attr = self.name_map[node.attr]
@@ -166,10 +166,10 @@ class insertjunk(ast.NodeTransformer):
             node.body = self._insertjunk(body)
         return node
 
-    def _visitfuncdef(self, node):
+    def visit_FunctionDef(self, node):
         return self._processbody(node)
 
-    _visitAsyncFunctionDef = _visitfuncdef
+    visit_AsyncFunctionDef = visit_FunctionDef
 
 class obfstr(ast.NodeTransformer):
     def __init__(self, decode_func_name):
@@ -185,24 +185,24 @@ class obfstr(ast.NodeTransformer):
         ):
             self._skip_ids.add(id(node.body[0].value))
 
-    def _visitmodule(self, node):
+    def visit_Module(self, node):
         self._markdocstr(node)
         self.generic_visit(node)
         return node
 
-    def _visitfuncdef(self, node):
+    def visit_FunctionDef(self, node):
         self._markdocstr(node)
         self.generic_visit(node)
         return node
 
-    _visitAsyncFunctionDef = _visitfuncdef
+    visit_AsyncFunctionDef = visit_FunctionDef
 
-    def _visitclassdef(self, node):
+    def visit_ClassDef(self, node):
         self._markdocstr(node)
         self.generic_visit(node)
         return node
 
-    def _visitjoinedstr(self, node):
+    def visit_JoinedStr(self, node):
         new_values = []
         for v in node.values:
             if isinstance(v, ast.FormattedValue):
@@ -212,7 +212,7 @@ class obfstr(ast.NodeTransformer):
         node.values = new_values
         return node
 
-    def _visitmatch(self, node):
+    def visit_Match(self, node):
         for case in node.cases:
             for sub in ast.walk(case.pattern):
                 if isinstance(sub, ast.Constant):
@@ -222,7 +222,7 @@ class obfstr(ast.NodeTransformer):
         node.subject = self.visit(node.subject)
         return node
 
-    def _visitconstant(self, node):
+    def visit_Constant(self, node):
         if (
             isinstance(node.value, str)
             and node.value != ""

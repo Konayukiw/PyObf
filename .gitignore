@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+
+#Test files
+check.py
+check_obf.py
+import.txt
