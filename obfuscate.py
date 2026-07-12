@@ -542,7 +542,7 @@ def main():
         f.write(obfuscated)
         f.write("\n")
 
-    print(f"Obfuscation completed -> {output_path}")
+    print(f"Obfuscation completed: {output_path}")
 
 
 if __name__ == "__main__":

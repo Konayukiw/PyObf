@@ -3,10 +3,9 @@
 Tool for obfuscating Python scripts.
 
 ## Features:
-1. Replaces function and method names with random 3-character alphabetic strings.
+1. Replaces function, variable and method names with random 3-character alphabetic strings.
 2. Inserts junk code (harmless dummy operations) to complicate the logic.
-3. Base64-encodes string literals (using '' or "") and replaces them
-with code that decodes themselves at runtime.
+3. Base64-encodes string literals and replaces them with code that decodes themselves at runtime.
 
 ## Usage
 1. pip install -r requirements.txt
