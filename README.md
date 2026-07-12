@@ -1,8 +1,4 @@
 # PyObf
-### Obfuscate Python script by renaming functions, inserting junk code, and obfuscating string literals.
-=======
-
-# PyObf
 
 Tool for obfuscating Python scripts.
 
