@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # PyObf
 Obfuscate Python script by renaming functions, inserting junk code, and obfuscating string literals.
 =======
@@ -36,4 +35,3 @@ in certain type hints).
 subject to conversion, whereas the literal parts of the
 f-string itself are not.
 Always verify the script's functionality after obfuscation.
->>>>>>> 5d1e413 (first release)
