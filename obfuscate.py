@@ -532,7 +532,7 @@ def main():
             output_path = args.target + "_obf.py"
 
     header = (
-        "# -*- coding: utf-8 -*-\n"
+        "# Format: UTF-8\n"
         "# Automatically obfuscated by PyObf (https://github.com/Konayukiw/PyObf).\n"
         "# Original file: {}\n\n"
     ).format(args.target)
