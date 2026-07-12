@@ -98,33 +98,33 @@ class renameidents(ast.NodeTransformer):
         self.name_map = name_map
         self.attr_names = attr_names if attr_names is not None else set(name_map)
 
-    def visitFunctionDef(self, node):
+    def visit_FunctionDef(self, node):
         self.generic_visit(node)
         if node.name in self.name_map:
             node.name = self.name_map[node.name]
         return node
 
-    visit_AsyncFunctionDef = visitFunctionDef
+    visit_AsyncFunctionDef = visit_FunctionDef
 
-    def visitName(self, node):
+    def visit_Name(self, node):
         if node.id in self.name_map:
             node.id = self.name_map[node.id]
         return node
 
-    def visitAttribute(self, node):
+    def visit_Attribute(self, node):
         self.generic_visit(node)
-        if node.attr in self.attr_names:
+        if node.attr in self.attr_names and node.attr in self.name_map:
             node.attr = self.name_map[node.attr]
         return node
 
-    def visitArg(self, node):
+    def visit_arg(self, node):
         if node.arg in self.name_map:
             node.arg = self.name_map[node.arg]
         if node.annotation is not None:
             node.annotation = self.visit(node.annotation)
         return node
 
-    def visitCall(self, node):
+    def visit_Call(self, node):
         local_func = False
         if isinstance(node.func, ast.Name) and node.func.id in self.attr_names:
             local_func = True
@@ -144,33 +144,33 @@ class renameidents(ast.NodeTransformer):
         node.keywords = new_keywords
         return node
 
-    def visitExceptHandler(self, node):
+    def visit_ExceptHandler(self, node):
         self.generic_visit(node)
         if node.name is not None and node.name in self.name_map:
             node.name = self.name_map[node.name]
         return node
 
-    def visitGlobal(self, node):
+    def visit_Global(self, node):
         node.names = [self.name_map.get(n, n) for n in node.names]
         return node
 
-    def visitNonlocal(self, node):
+    def visit_Nonlocal(self, node):
         node.names = [self.name_map.get(n, n) for n in node.names]
         return node
 
-    def visitMatchAs(self, node):
+    def visit_MatchAs(self, node):
         self.generic_visit(node)
         if node.name is not None and node.name in self.name_map:
             node.name = self.name_map[node.name]
         return node
 
-    def visitMatchStar(self, node):
+    def visit_MatchStar(self, node):
         self.generic_visit(node)
         if node.name is not None and node.name in self.name_map:
             node.name = self.name_map[node.name]
         return node
 
-    def visitMatchMapping(self, node):
+    def visit_MatchMapping(self, node):
         self.generic_visit(node)
         if node.rest is not None and node.rest in self.name_map:
             node.rest = self.name_map[node.rest]
@@ -272,10 +272,10 @@ class insertjunk(ast.NodeTransformer):
             node.body = self._insertjunk(body)
         return node
 
-    def visitFunctionDef(self, node):
+    def visit_FunctionDef(self, node):
         return self._processbody(node)
 
-    visit_AsyncFunctionDef = visitFunctionDef
+    visit_AsyncFunctionDef = visit_FunctionDef
 
 class obfstr(ast.NodeTransformer):
     def __init__(self, decode_func_name):
@@ -291,17 +291,17 @@ class obfstr(ast.NodeTransformer):
         ):
             self._skip_ids.add(id(node.body[0].value))
 
-    def visitModule(self, node):
+    def visit_Module(self, node):
         self._markdocstr(node)
         self.generic_visit(node)
         return node
 
-    def visitFunctionDef(self, node):
+    def visit_FunctionDef(self, node):
         self._markdocstr(node)
         self.generic_visit(node)
         return node
 
-    visit_AsyncFunctionDef = visitFunctionDef
+    visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_ClassDef(self, node):
         self._markdocstr(node)
