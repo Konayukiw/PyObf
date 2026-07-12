@@ -14,6 +14,7 @@ Tool for obfuscating Python scripts.
 	python obfuscate.py (input).py (output).py 
 
 **Output**
+
 By default, the obfuscated result is saved as "(target)_obf.py".
 
 ## Notes
