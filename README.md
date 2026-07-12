@@ -27,7 +27,7 @@ with the same name as a target for renaming.
 - When the code relies on mechanisms that evaluate strings
 (e.g., eval, exec, dynamic imports, or string references
 in certain type hints).
-- Strings used within f-string expressions (inside `{ }`) are
-subject to conversion, whereas the literal parts of the
-f-string itself are not.
+- Literal text in f-strings is obfuscated; expressions inside
+`{ }` are left intact (nested string constants in those
+expressions are still converted).
 Always verify the script's functionality after obfuscation.

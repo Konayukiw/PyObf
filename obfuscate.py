@@ -39,7 +39,20 @@ def collectexisting(tree):
 def isdunder(name):
     return name.startswith("__") and name.endswith("__")
 
-def collectrenemable(tree):
+def collectimported(tree):
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                names.add(alias.asname or alias.name)
+    return names
+
+def collectrenemablefuncs(tree):
     names = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -47,30 +60,123 @@ def collectrenemable(tree):
                 names.add(node.name)
     return names
 
+def collectrenemablevars(tree):
+    names = set()
+    imported = collectimported(tree)
+    reserved = set(keyword.kwlist) | set(dir(builtins))
 
-class renamefunc(ast.NodeTransformer):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg):
+            if not isdunder(node.arg):
+                names.add(node.arg)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            if not isdunder(node.id):
+                names.add(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            if not isdunder(node.name):
+                names.add(node.name)
+        elif isinstance(node, ast.MatchAs) and node.name:
+            if not isdunder(node.name):
+                names.add(node.name)
+        elif isinstance(node, ast.MatchStar) and node.name:
+            if not isdunder(node.name):
+                names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            if not isdunder(node.rest):
+                names.add(node.rest)
 
-    def __init__(self, name_map):
+    names -= imported
+    names -= reserved
+    return names
+
+def collectrenemable(tree):
+    return collectrenemablefuncs(tree)
+
+
+class renameidents(ast.NodeTransformer):
+    def __init__(self, name_map, attr_names=None):
         self.name_map = name_map
+        self.attr_names = attr_names if attr_names is not None else set(name_map)
 
-    def visit_FunctionDef(self, node):
+    def visitFunctionDef(self, node):
         self.generic_visit(node)
         if node.name in self.name_map:
             node.name = self.name_map[node.name]
         return node
 
-    visit_AsyncFunctionDef = visit_FunctionDef
+    visit_AsyncFunctionDef = visitFunctionDef
 
-    def visit_Name(self, node):
+    def visitName(self, node):
         if node.id in self.name_map:
             node.id = self.name_map[node.id]
         return node
 
-    def visit_Attribute(self, node):
+    def visitAttribute(self, node):
         self.generic_visit(node)
-        if node.attr in self.name_map:
+        if node.attr in self.attr_names:
             node.attr = self.name_map[node.attr]
         return node
+
+    def visitArg(self, node):
+        if node.arg in self.name_map:
+            node.arg = self.name_map[node.arg]
+        if node.annotation is not None:
+            node.annotation = self.visit(node.annotation)
+        return node
+
+    def visitCall(self, node):
+        local_func = False
+        if isinstance(node.func, ast.Name) and node.func.id in self.attr_names:
+            local_func = True
+        elif isinstance(node.func, ast.Attribute) and node.func.attr in self.attr_names:
+            local_func = True
+
+        node.func = self.visit(node.func)
+        node.args = [self.visit(a) for a in node.args]
+        new_keywords = []
+        for kw in node.keywords:
+            arg = kw.arg
+            if local_func and arg is not None and arg in self.name_map:
+                arg = self.name_map[arg]
+            new_keywords.append(
+                ast.keyword(arg=arg, value=self.visit(kw.value))
+            )
+        node.keywords = new_keywords
+        return node
+
+    def visitExceptHandler(self, node):
+        self.generic_visit(node)
+        if node.name is not None and node.name in self.name_map:
+            node.name = self.name_map[node.name]
+        return node
+
+    def visitGlobal(self, node):
+        node.names = [self.name_map.get(n, n) for n in node.names]
+        return node
+
+    def visitNonlocal(self, node):
+        node.names = [self.name_map.get(n, n) for n in node.names]
+        return node
+
+    def visitMatchAs(self, node):
+        self.generic_visit(node)
+        if node.name is not None and node.name in self.name_map:
+            node.name = self.name_map[node.name]
+        return node
+
+    def visitMatchStar(self, node):
+        self.generic_visit(node)
+        if node.name is not None and node.name in self.name_map:
+            node.name = self.name_map[node.name]
+        return node
+
+    def visitMatchMapping(self, node):
+        self.generic_visit(node)
+        if node.rest is not None and node.rest in self.name_map:
+            node.rest = self.name_map[node.rest]
+        return node
+
+renamefunc = renameidents
 
 
 class insertjunk(ast.NodeTransformer):
@@ -166,10 +272,10 @@ class insertjunk(ast.NodeTransformer):
             node.body = self._insertjunk(body)
         return node
 
-    def visit_FunctionDef(self, node):
+    def visitFunctionDef(self, node):
         return self._processbody(node)
 
-    visit_AsyncFunctionDef = visit_FunctionDef
+    visit_AsyncFunctionDef = visitFunctionDef
 
 class obfstr(ast.NodeTransformer):
     def __init__(self, decode_func_name):
@@ -185,32 +291,90 @@ class obfstr(ast.NodeTransformer):
         ):
             self._skip_ids.add(id(node.body[0].value))
 
-    def visit_Module(self, node):
+    def visitModule(self, node):
         self._markdocstr(node)
         self.generic_visit(node)
         return node
 
-    def visit_FunctionDef(self, node):
+    def visitFunctionDef(self, node):
         self._markdocstr(node)
         self.generic_visit(node)
         return node
 
-    visit_AsyncFunctionDef = visit_FunctionDef
+    visit_AsyncFunctionDef = visitFunctionDef
 
     def visit_ClassDef(self, node):
         self._markdocstr(node)
         self.generic_visit(node)
         return node
 
+    def _encode_str(self, value, template_node=None):
+        encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+        new_node = ast.Call(
+            func=ast.Name(id=self.decode_func_name, ctx=ast.Load()),
+            args=[ast.Constant(value=encoded)],
+            keywords=[],
+        )
+        if template_node is not None:
+            return ast.copy_location(new_node, template_node)
+        return new_node
+
+    def _formatted_value_to_str_expr(self, node):
+        value = self.visit(node.value)
+
+        if node.conversion == 115:
+            value = ast.Call(
+                func=ast.Name(id="str", ctx=ast.Load()),
+                args=[value],
+                keywords=[],
+            )
+        elif node.conversion == 114:
+            value = ast.Call(
+                func=ast.Name(id="repr", ctx=ast.Load()),
+                args=[value],
+                keywords=[],
+            )
+        elif node.conversion == 97:
+            value = ast.Call(
+                func=ast.Name(id="ascii", ctx=ast.Load()),
+                args=[value],
+                keywords=[],
+            )
+
+        if node.format_spec is not None:
+            spec = self.visit(node.format_spec)
+            return ast.Call(
+                func=ast.Name(id="format", ctx=ast.Load()),
+                args=[value, spec],
+                keywords=[],
+            )
+
+        if node.conversion in (115, 114, 97):
+            return value
+        return ast.Call(
+            func=ast.Name(id="format", ctx=ast.Load()),
+            args=[value],
+            keywords=[],
+        )
+
     def visit_JoinedStr(self, node):
-        new_values = []
+        parts = []
         for v in node.values:
             if isinstance(v, ast.FormattedValue):
-                new_values.append(self.visit(v))
+                parts.append(self._formatted_value_to_str_expr(v))
+            elif isinstance(v, ast.Constant) and isinstance(v.value, str):
+                if v.value != "":
+                    parts.append(self._encode_str(v.value, v))
             else:
-                new_values.append(v)
-        node.values = new_values
-        return node
+                parts.append(v)
+
+        if not parts:
+            return ast.copy_location(ast.Constant(value=""), node)
+
+        result = parts[0]
+        for part in parts[1:]:
+            result = ast.BinOp(left=result, op=ast.Add(), right=part)
+        return ast.copy_location(result, node)
 
     def visit_Match(self, node):
         for case in node.cases:
@@ -228,13 +392,7 @@ class obfstr(ast.NodeTransformer):
             and node.value != ""
             and id(node) not in self._skip_ids
         ):
-            encoded = base64.b64encode(node.value.encode("utf-8")).decode("ascii")
-            new_node = ast.Call(
-                func=ast.Name(id=self.decode_func_name, ctx=ast.Load()),
-                args=[ast.Constant(value=encoded)],
-                keywords=[],
-            )
-            return ast.copy_location(new_node, node)
+            return self._encode_str(node.value, node)
         return node
 
 def decodehelper(alias_name, decode_func_name):
@@ -312,9 +470,11 @@ def obfsource(source_code, junk_probability=0.6):
     existing = collectexisting(tree)
     name_gen = namegen(existing)
 
-    renamable = collectrenemable(tree)
+    renamable_funcs = collectrenemablefuncs(tree)
+    renamable_vars = collectrenemablevars(tree)
+    renamable = renamable_funcs | renamable_vars
     name_map = {old: name_gen.new_name() for old in renamable}
-    tree = renamefunc(name_map).visit(tree)
+    tree = renameidents(name_map, attr_names=renamable_funcs).visit(tree)
 
     alias_name = name_gen.new_name()
     decode_func_name = name_gen.new_name()
@@ -331,7 +491,7 @@ def obfsource(source_code, junk_probability=0.6):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Obfuscate Python script by renaming functions, inserting junk code, and obfuscating string literals."
+        description="Obfuscate Python script by renaming functions/variables, inserting junk code, and obfuscating string literals."
     )
     parser.add_argument("target", help="Target .py file to obfuscate")
     parser.add_argument("output", nargs="?", default=None, help="Output file name (default: <target>_obf.py)")
