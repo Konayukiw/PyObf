@@ -20,7 +20,7 @@ python obfuscate.py <input.py> <output.py>
 python obfuscate.py <input.py> -c pyobf.ini --junk-frequency 8 --seed 1
 ```
 
-### CLI options
+### Arguments Options
 
 | Option | Description |
 |--------|-------------|
@@ -37,10 +37,10 @@ python obfuscate.py <input.py> -c pyobf.ini --junk-frequency 8 --seed 1
 
 ```ini
 [output]
-filename =          # empty => <target>_obf.py
+filename =          # Leave this empty to use default: <target>_obf.py
 
 [names]
-length = 3          # or 3-6 for a range
+length = 3          # 3-6
 
 [junk]
 frequency = 6       # 0–10
