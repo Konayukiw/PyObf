@@ -1,2 +1,2 @@
 # PyObf uses only the Python standard library.
-# No third-party packages are required to run obfuscate.py.
+# No third-party packages are required to run obfuscate.py ahaha
