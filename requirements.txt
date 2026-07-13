@@ -1,8 +1,2 @@
-import argparse
-import ast
-import base64
-import builtins
-import keyword
-import random
-import string
-import sys
+# PyObf uses only the Python standard library.
+# No third-party packages are required to run obfuscate.py.
