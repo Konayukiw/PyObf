@@ -215,7 +215,6 @@ def collectrenemable(tree: ast.AST) -> set[str]:
     return collectrenemablefuncs(tree)
 
 def names_defined_by_stmt(stmt: ast.AST) -> set[str]:
-    """Names bound by a top-level statement (best-effort)."""
     out: set[str] = set()
     if isinstance(stmt, ast.Assign):
         for t in stmt.targets:
@@ -704,11 +703,6 @@ def encrypt_string(
     cfg: ObfConfig,
     pipeline: tuple[str, ...],
 ) -> tuple[str | list[int], bytes]:
-    """
-    Encrypt string.
-    Returns (payload, rand_key).
-    payload is base85 ascii str if use_base85 else list of int bytes.
-    """
     data = value.encode("utf-8")
     rand_key = bytes(random.randint(0, 255) for _ in range(random.randint(4, 12)))
     env = get_env_key_material(cfg.env_key_path) if cfg.use_env_key else b""
@@ -738,7 +732,6 @@ def decrypt_string(
     cfg: ObfConfig,
     pipeline: tuple[str, ...],
 ) -> str:
-    """Reference decrypt (for tests / validation)."""
     if cfg.use_base85:
         data = base64.b85decode(payload if isinstance(payload, str) else bytes(payload))
     else:
@@ -759,7 +752,6 @@ def decrypt_string(
     return data.decode("utf-8")
 
 def _bytes_literal_obf(data: bytes) -> ast.expr:
-    """bytes([...obfuscated ints...])."""
     return ast.Call(
         func=ast.Name(id="bytes", ctx=ast.Load()),
         args=[ast.List(elts=[_obf_byte_expr(b) for b in data], ctx=ast.Load())],
