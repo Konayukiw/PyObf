@@ -10,6 +10,7 @@ import builtins
 import configparser
 import itertools
 import keyword
+import marshal
 import os
 import random
 import string
@@ -174,6 +175,34 @@ def collectimported(tree: ast.AST) -> set[str]:
                 names.add(alias.asname or alias.name)
     return names
 
+def _collect_non_nested_funcs(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    if isinstance(tree, ast.Module):
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names.add(stmt.name)
+            if isinstance(stmt, ast.ClassDef):
+                for member in stmt.body:
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        names.add(member.name)
+    return names
+
+
+def _collect_nested_funcs(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for parent in ast.walk(tree):
+                if parent is node:
+                    continue
+                if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for child in ast.walk(parent):
+                        if child is node:
+                            names.add(node.name)
+                            break
+    return names
+
+
 def collectrenemablefuncs(tree: ast.AST) -> set[str]:
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -182,10 +211,30 @@ def collectrenemablefuncs(tree: ast.AST) -> set[str]:
                 names.add(node.name)
     return names
 
+
+class _ClassAttrCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.class_attrs: set[str] = set()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for stmt in node.body:
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                self.class_attrs.add(stmt.target.id)
+            elif isinstance(stmt, ast.Assign):
+                for t in stmt.targets:
+                    if isinstance(t, ast.Name):
+                        self.class_attrs.add(t.id)
+        self.generic_visit(node)
+
+
 def collectrenemablevars(tree: ast.AST) -> set[str]:
     names: set[str] = set()
     imported = collectimported(tree)
     reserved = set(keyword.kwlist) | set(dir(builtins))
+
+    collector = _ClassAttrCollector()
+    collector.visit(tree)
+    class_attrs = collector.class_attrs
 
     for node in ast.walk(tree):
         if isinstance(node, ast.arg):
@@ -209,6 +258,7 @@ def collectrenemablevars(tree: ast.AST) -> set[str]:
 
     names -= imported
     names -= reserved
+    names -= class_attrs
     return names
 
 def collectrenemable(tree: ast.AST) -> set[str]:
@@ -246,10 +296,20 @@ def names_defined_by_stmt(stmt: ast.AST) -> set[str]:
             out.add(alias.asname or alias.name.split(".")[0])
     return out
 
+def _collect_class_names(tree: ast.AST) -> set[str]:
+    return {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
+
+
 class renameidents(ast.NodeTransformer):
-    def __init__(self, name_map: dict[str, str], attr_names: Optional[set[str]] = None):
+    def __init__(
+        self,
+        name_map: dict[str, str],
+        attr_names: Optional[set[str]] = None,
+        class_names: Optional[set[str]] = None,
+    ):
         self.name_map = name_map
         self.attr_names = attr_names if attr_names is not None else set(name_map)
+        self.class_names = class_names if class_names is not None else set()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
         self.generic_visit(node)
@@ -266,8 +326,6 @@ class renameidents(ast.NodeTransformer):
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
         self.generic_visit(node)
-        if node.attr in self.attr_names and node.attr in self.name_map:
-            node.attr = self.name_map[node.attr]
         return node
 
     def visit_arg(self, node: ast.arg) -> ast.AST:
@@ -279,12 +337,20 @@ class renameidents(ast.NodeTransformer):
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
         local_func = False
-        if isinstance(node.func, ast.Name) and node.func.id in self.attr_names:
+        if isinstance(node.func, ast.Name) and (
+            node.func.id in self.attr_names or node.func.id in self.class_names
+        ):
             local_func = True
         elif isinstance(node.func, ast.Attribute) and node.func.attr in self.attr_names:
             local_func = True
 
-        node.func = self.visit(node.func)
+        if isinstance(node.func, ast.Attribute):
+            node.func.value = self.visit(node.func.value)
+            if node.func.attr in self.attr_names and node.func.attr in self.name_map:
+                node.func.attr = self.name_map[node.func.attr]
+        else:
+            node.func = self.visit(node.func)
+
         node.args = [self.visit(a) for a in node.args]
         new_keywords = []
         for kw in node.keywords:
@@ -763,6 +829,42 @@ def _const_str_or_list_payload(payload: str | list[int]) -> ast.expr:
         return ast.Constant(value=payload)
     return ast.List(elts=[ast.Constant(value=i) for i in payload], ctx=ast.Load())
 
+def _is_docstring_stmt(stmt: ast.stmt) -> bool:
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Constant)
+        and isinstance(stmt.value.value, str)
+    )
+
+
+def _strip_leading_docstring(node: ast.AST) -> None:
+    body = getattr(node, "body", None)
+    if not body or not _is_docstring_stmt(body[0]):
+        return
+    del body[0]
+    if not body and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        body.append(ast.Pass())
+
+
+class StripDocstrings(ast.NodeTransformer):
+    def visit_Module(self, node: ast.Module) -> ast.AST:
+        _strip_leading_docstring(node)
+        self.generic_visit(node)
+        return node
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        _strip_leading_docstring(node)
+        self.generic_visit(node)
+        return node
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        _strip_leading_docstring(node)
+        self.generic_visit(node)
+        return node
+
+
 class StringEncryptor(ast.NodeTransformer):
     def __init__(
         self,
@@ -777,33 +879,6 @@ class StringEncryptor(ast.NodeTransformer):
         self.env_func_name = env_func_name
         self._skip_ids: set[int] = set()
         self.used_pipelines: set[tuple[str, ...]] = set()
-
-    def _markdocstr(self, node: ast.AST) -> None:
-        body = getattr(node, "body", None)
-        if (
-            body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            self._skip_ids.add(id(body[0].value))
-
-    def visit_Module(self, node: ast.Module) -> ast.AST:
-        self._markdocstr(node)
-        self.generic_visit(node)
-        return node
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        self._markdocstr(node)
-        self.generic_visit(node)
-        return node
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
-        self._markdocstr(node)
-        self.generic_visit(node)
-        return node
 
     def visit_Match(self, node: ast.Match) -> ast.AST:
         for case in node.cases:
@@ -1152,6 +1227,139 @@ def build_decoder_func(
     )
 
 
+def pack_helper_blob(helper_stmts: list[ast.stmt]) -> tuple[bytes, bytes]:
+    """Compile helper defs to marshal bytecode and XOR-encrypt for embedding."""
+    mod = ast.Module(body=list(helper_stmts), type_ignores=[])
+    ast.fix_missing_locations(mod)
+    code = compile(mod, "<obf>", "exec")
+    raw = marshal.dumps(code)
+    key = bytes(random.randint(0, 255) for _ in range(random.randint(8, 16)))
+    return _xor_bytes(raw, key), key
+
+
+def build_runtime_loader(
+    helper_stmts: list[ast.stmt],
+    export_names: list[str],
+    name_gen: NameGen,
+) -> list[ast.stmt]:
+    blob, key = pack_helper_blob(helper_stmts)
+
+    loader_name = name_gen.new_name()
+    b_name = name_gen.new_name()
+    k_name = name_gen.new_name()
+    d_name = name_gen.new_name()
+    ns_name = name_gen.new_name()
+    g_name = name_gen.new_name()
+    i_name = name_gen.new_name()
+
+    marshal_loads = _getattr_ast(_load_module_ast("marshal"), "loads")
+
+    body: list[ast.stmt] = [
+        ast.Assign(
+            targets=[_name(b_name, ast.Store())],
+            value=ast.Constant(value=blob),
+        ),
+        ast.Assign(
+            targets=[_name(k_name, ast.Store())],
+            value=_bytes_literal_obf(key),
+        ),
+        ast.Assign(
+            targets=[_name(d_name, ast.Store())],
+            value=ast.Call(
+                func=_name("bytes"),
+                args=[
+                    ast.ListComp(
+                        elt=ast.BinOp(
+                            left=ast.Subscript(
+                                value=_name(b_name),
+                                slice=_name(i_name),
+                                ctx=ast.Load(),
+                            ),
+                            op=ast.BitXor(),
+                            right=ast.Subscript(
+                                value=_name(k_name),
+                                slice=ast.BinOp(
+                                    left=_name(i_name),
+                                    op=ast.Mod(),
+                                    right=_call(_name("len"), [_name(k_name)]),
+                                ),
+                                ctx=ast.Load(),
+                            ),
+                        ),
+                        generators=[
+                            ast.comprehension(
+                                target=_name(i_name, ast.Store()),
+                                iter=_call(
+                                    _name("range"),
+                                    [_call(_name("len"), [_name(b_name)])],
+                                ),
+                                ifs=[],
+                                is_async=0,
+                            )
+                        ],
+                    )
+                ],
+                keywords=[],
+            ),
+        ),
+        ast.Assign(
+            targets=[_name(ns_name, ast.Store())],
+            value=ast.Dict(keys=[], values=[]),
+        ),
+        ast.Expr(
+            value=_call(
+                _name("exec"),
+                [_call(marshal_loads, [_name(d_name)]), _name(ns_name)],
+            )
+        ),
+        ast.Assign(
+            targets=[_name(g_name, ast.Store())],
+            value=_call(_name("globals")),
+        ),
+    ]
+
+    for exp in export_names:
+        body.append(
+            ast.Assign(
+                targets=[
+                    ast.Subscript(
+                        value=_name(g_name),
+                        slice=ast.Constant(value=exp),
+                        ctx=ast.Store(),
+                    )
+                ],
+                value=ast.Subscript(
+                    value=_name(ns_name),
+                    slice=ast.Constant(value=exp),
+                    ctx=ast.Load(),
+                ),
+            )
+        )
+
+    loader_def = ast.FunctionDef(
+        name=loader_name,
+        args=ast.arguments(
+            posonlyargs=[],
+            args=[],
+            vararg=None,
+            kwonlyargs=[],
+            kw_defaults=[],
+            kwarg=None,
+            defaults=[],
+        ),
+        body=body,
+        decorator_list=[],
+        returns=None,
+    )
+
+    stmts: list[ast.stmt] = [
+        loader_def,
+        ast.Expr(value=_call(_name(loader_name))),
+        ast.Delete(targets=[_name(loader_name, ast.Del())]),
+    ]
+    return [ast.fix_missing_locations(s) for s in stmts]
+
+
 def _ast_swap_inplace(d_name: str, helper_names: dict[str, str]) -> list[ast.stmt]:
     return [
         ast.Assign(
@@ -1449,10 +1657,7 @@ def _ast_xor_inplace(d_name: str, k_name: str) -> list[ast.stmt]:
                         generators=[
                             ast.comprehension(
                                 target=_name("i", ast.Store()),
-                                iter=_call(
-                                    _name("range"),
-                                    [_call(_name("len"), [_name(d_name)])],
-                                ),
+                                iter=_call(_name("range"), [_call(_name("len"), [_name(d_name)])]),
                                 ifs=[],
                                 is_async=0,
                             )
@@ -1818,12 +2023,7 @@ def insertafter(module_body: list[ast.stmt], new_stmts: list[ast.stmt]) -> list[
     idx = 0
     n = len(module_body)
 
-    if (
-        n > idx
-        and isinstance(module_body[idx], ast.Expr)
-        and isinstance(module_body[idx].value, ast.Constant)
-        and isinstance(module_body[idx].value.value, str)
-    ):
+    if n > idx and _is_docstring_stmt(module_body[idx]):
         idx += 1
 
     while (
@@ -1849,6 +2049,9 @@ def obfsource(source_code: str, cfg: Optional[ObfConfig] = None, junk_probabilit
         cfg.junk_frequency = int(round(max(0.0, min(1.0, junk_probability)) * 10))
 
     tree = ast.parse(source_code)
+    tree = StripDocstrings().visit(tree)
+    ast.fix_missing_locations(tree)
+
     existing = collectexisting(tree)
     name_gen = NameGen(existing, cfg.name_length_min, cfg.name_length_max)
 
@@ -1858,7 +2061,11 @@ def obfsource(source_code: str, cfg: Optional[ObfConfig] = None, junk_probabilit
         renamable_vars = collectrenemablevars(tree)
         renamable = renamable_funcs | renamable_vars
         name_map = {old: name_gen.new_name() for old in renamable}
-        tree = renameidents(name_map, attr_names=renamable_funcs).visit(tree)
+        attr_names = _collect_non_nested_funcs(tree)
+        class_names = _collect_class_names(tree)
+        tree = renameidents(
+            name_map, attr_names=attr_names, class_names=class_names
+        ).visit(tree)
         ast.fix_missing_locations(tree)
 
     # Hide imports
@@ -1894,22 +2101,25 @@ def obfsource(source_code: str, cfg: Optional[ObfConfig] = None, junk_probabilit
         tree = InsertJunk(name_gen, probability=cfg.junk_probability()).visit(tree)
         ast.fix_missing_locations(tree)
 
-    # Inject helpers
-    helper_stmts: list[ast.stmt] = []
+    # Inject helpers as encrypted payload
     if cfg.encrypt_strings:
+        helper_stmts: list[ast.stmt] = []
         if cfg.use_env_key and env_func_name:
             helper_stmts.append(build_env_key_func(env_func_name, cfg.env_key_path))
 
         helper_names: dict[str, str] = {}
         pipelines_to_emit = used_pipelines or {tuple(cfg.middle_ops())}
+        export_names: list[str] = []
         for pipeline in sorted(pipelines_to_emit, key=lambda p: decoder_names.get(p, "")):
             fname = decoder_names.get(pipeline) or name_gen.new_name()
             helper_stmts.append(
                 build_decoder_func(fname, pipeline, cfg, env_func_name, helper_names)
             )
+            export_names.append(fname)
 
-        if helper_stmts:
-            tree.body = insertafter(tree.body, helper_stmts)
+        if helper_stmts and export_names:
+            loader_stmts = build_runtime_loader(helper_stmts, export_names, name_gen)
+            tree.body = insertafter(tree.body, loader_stmts)
 
     ast.fix_missing_locations(tree)
     return ast.unparse(tree)
